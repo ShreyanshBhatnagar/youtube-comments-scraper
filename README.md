@@ -18,6 +18,28 @@ Numbers for the leading Store Actor (`streamers/youtube-comments-scraper`, 3,935
 | Speed | ~10–20 comments/sec (HTTP pagination) | ~1.3 comments/sec (independent test: 75 comments in 57 s) |
 | Pinned / hearted / creator flags | Included in every row | Partial |
 
+## Input
+
+| Field | Default | Notes |
+|---|---|---|
+| `videoUrls` | — (required) | Watch URLs, `youtu.be`, Shorts/live links, or bare video IDs. Up to 50 videos per run. |
+| `maxCommentsPerVideo` | 100 | **Hard** cap on top-level comments per video. `0` = up to 10,000. |
+| `includeReplies` | `true` | Turn off for top-level comments only. |
+| `maxRepliesPerComment` | 10 | `0` = all available replies (safety ceiling 1,000). |
+| `sortBy` | `top` | `top` (YouTube's relevance order) or `newest`. |
+| `maxTotalChargeUsd` | 0 (off) | Run stops *before* the estimated charge passes this amount (estimated at the free-plan rate, so it is conservative on paid plans). |
+
+```json
+{
+  "videoUrls": ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
+  "maxCommentsPerVideo": 500,
+  "includeReplies": true,
+  "maxRepliesPerComment": 20,
+  "sortBy": "top",
+  "maxTotalChargeUsd": 1
+}
+```
+
 ## What you get
 
 One dataset row per comment or reply, with thread structure preserved:
@@ -40,28 +62,6 @@ One dataset row per comment or reply, with thread structure preserved:
 | `videoId` / `videoTitle` / `videoChannelName` | Source video |
 | `commentUrl` | Direct link that opens YouTube scrolled to the comment |
 | `scrapedAt` | ISO timestamp of the scrape |
-
-## Input
-
-| Field | Default | Notes |
-|---|---|---|
-| `videoUrls` | — (required) | Watch URLs, `youtu.be`, Shorts/live links, or bare video IDs. Up to 50 videos per run. |
-| `maxCommentsPerVideo` | 100 | **Hard** cap on top-level comments per video. `0` = up to 10,000. |
-| `includeReplies` | `true` | Turn off for top-level comments only. |
-| `maxRepliesPerComment` | 10 | `0` = all available replies (safety ceiling 1,000). |
-| `sortBy` | `top` | `top` (YouTube's relevance order) or `newest`. |
-| `maxTotalChargeUsd` | 0 (off) | Run stops *before* the estimated charge passes this amount (estimated at the free-plan rate, so it is conservative on paid plans). |
-
-```json
-{
-  "videoUrls": ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
-  "maxCommentsPerVideo": 500,
-  "includeReplies": true,
-  "maxRepliesPerComment": 20,
-  "sortBy": "top",
-  "maxTotalChargeUsd": 1
-}
-```
 
 ## Pricing
 
