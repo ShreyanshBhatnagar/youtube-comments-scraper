@@ -53,29 +53,55 @@ export function estimatePublishedAt(publishedTimeText, nowMs = Date.now()) {
     return new Date(nowMs - parseInt(m[1], 10) * unit).toISOString();
 }
 
+function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+}
+
+function retryAfterMs(res) {
+    const ra = res.headers?.get?.('retry-after');
+    if (!ra) return null;
+    const secs = Number(ra);
+    if (Number.isFinite(secs)) return Math.min(Math.max(secs, 0) * 1000, 30000);
+    const when = Date.parse(ra);
+    if (!Number.isNaN(when)) return Math.min(Math.max(when - Date.now(), 0), 30000);
+    return null;
+}
+
 async function fetchText(url, { method = 'GET', body } = {}) {
     let lastErr;
     for (let attempt = 0; attempt < 4; attempt++) {
+        let delayMs = null;
         try {
             const res = await fetch(url, {
                 method,
                 headers: {
                     'User-Agent': UA,
                     'Accept-Language': 'en-US,en;q=0.9',
+                    // Consent cookie: without it, EU/datacenter egress IPs are
+                    // frequently served a consent interstitial instead of the page.
+                    Cookie: 'SOCS=CAESHAgBEhIaAB',
                     ...(body ? { 'Content-Type': 'application/json' } : {}),
                 },
                 body: body ? JSON.stringify(body) : undefined,
                 signal: AbortSignal.timeout(30000),
             });
-            if (res.status === 429 || res.status >= 500) {
-                throw new Error(`HTTP ${res.status}`);
+            if (res.ok) return await res.text();
+            const err = new Error(`HTTP ${res.status}`);
+            // Permanent client errors (400/403/404...) will never succeed on
+            // retry; fail fast instead of burning attempts.
+            if (res.status !== 429 && res.status < 500) {
+                err.nonRetryable = true;
+                throw err;
             }
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            return await res.text();
-        } catch (err) {
+            delayMs = retryAfterMs(res);
+            await res.text().catch(() => {}); // drain so the socket can be reused
             lastErr = err;
-            await new Promise((r) => setTimeout(r, 800 * 2 ** attempt));
+        } catch (err) {
+            if (err.nonRetryable) throw err;
+            lastErr = err;
         }
+        // No sleep after the final attempt.
+        if (attempt < 3) await sleep(delayMs ?? 800 * 2 ** attempt);
     }
     throw lastErr;
 }
@@ -115,13 +141,35 @@ export class YouTubeCommentsClient {
     }
 
     async init() {
-        const html = await fetchText('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
-        const key = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
-        const ver = html.match(/"INNERTUBE_CLIENT_VERSION":"([^"]+)"/);
-        if (!key) throw new Error('Could not extract INNERTUBE_API_KEY from youtube.com');
-        this.apiKey = key[1];
-        this.clientVersion = ver ? ver[1] : '2.20240111.09.00';
-        return this;
+        // The API key lives in the watch-page HTML of any public video. Never
+        // depend on a single page: one removed/age-gated/rate-limited video
+        // must not kill the run (fetchText already retries 429/5xx with
+        // backoff and honours Retry-After per source).
+        const sources = [
+            'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+            'https://www.youtube.com/watch?v=aqz-KE-bpKQ',
+            'https://www.youtube.com/embed/dQw4w9WgXcQ',
+        ];
+        let lastErr;
+        for (const url of sources) {
+            try {
+                const html = await fetchText(url);
+                const key = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/)
+                    || html.match(/"innertubeApiKey":"([^"]+)"/);
+                if (!key) {
+                    lastErr = new Error(`INNERTUBE_API_KEY not found at ${url} (possible consent or rate-limit page)`);
+                    continue;
+                }
+                const ver = html.match(/"INNERTUBE_CLIENT_VERSION":"([^"]+)"/)
+                    || html.match(/"innertubeClientVersion":"([^"]+)"/);
+                this.apiKey = key[1];
+                this.clientVersion = ver ? ver[1] : '2.20240111.09.00';
+                return this;
+            } catch (err) {
+                lastErr = err;
+            }
+        }
+        throw new Error(`Could not initialise a YouTube session from any source page: ${lastErr?.message || 'unknown error'}`);
     }
 
     context() {
@@ -140,7 +188,11 @@ export class YouTubeCommentsClient {
             `https://www.youtube.com/youtubei/v1/next?key=${this.apiKey}&prettyPrint=false`,
             { method: 'POST', body: { ...this.context(), ...body } },
         );
-        return JSON.parse(text);
+        try {
+            return JSON.parse(text);
+        } catch {
+            throw new Error('YouTube returned a non-JSON response (possible consent or rate-limit page)');
+        }
     }
 
     /**
@@ -221,33 +273,35 @@ export class YouTubeCommentsClient {
                         if (replies) {
                             for (const c of replies.contents || []) {
                                 const tok = c?.continuationItemRenderer ? findContinuationToken(c.continuationItemRenderer) : null;
-                                if (tok) repliesToken = tok;
+                                if (tok && !repliesToken) repliesToken = tok;
                             }
                             viewRepliesCount = runsText(replies.viewReplies?.buttonRenderer?.text);
                         }
-                        threads.push({ commentId, repliesToken, viewRepliesCount, legacy: legacy || null, raw: thread });
+                        threads.push({ commentId, repliesToken, viewRepliesCount, legacy: legacy || null });
                     }
                     continue;
                 }
                 const legacyTop = item.commentRenderer;
                 if (legacyTop?.commentId && !seenThread.has(legacyTop.commentId)) {
                     seenThread.add(legacyTop.commentId);
-                    threads.push({ commentId: legacyTop.commentId, repliesToken: null, viewRepliesCount: null, legacy: legacyTop, raw: legacyTop });
+                    threads.push({ commentId: legacyTop.commentId, repliesToken: null, viewRepliesCount: null, legacy: legacyTop });
                     continue;
                 }
                 // Replies pages return bare commentViewModel items (no thread wrapper).
                 const bareVm = item.commentViewModel?.commentViewModel || item.commentViewModel;
                 if (bareVm?.commentId && !seenThread.has(bareVm.commentId)) {
                     seenThread.add(bareVm.commentId);
-                    threads.push({ commentId: bareVm.commentId, repliesToken: null, viewRepliesCount: null, legacy: null, raw: item });
+                    threads.push({ commentId: bareVm.commentId, repliesToken: null, viewRepliesCount: null, legacy: null });
                     continue;
                 }
                 const cont = item.continuationItemRenderer;
                 if (cont) {
                     // Token lives under continuationEndpoint on section pages, but under
                     // button.buttonRenderer.command on "Show more replies" items.
+                    // First continuation in document order wins: a later one may
+                    // belong to a different section of the response.
                     const tok = findContinuationToken(cont);
-                    if (tok) nextToken = tok;
+                    if (tok && !nextToken) nextToken = tok;
                 }
             }
         };
@@ -335,23 +389,71 @@ export class YouTubeCommentsClient {
 
     /**
      * Fetch up to `cap` replies for one parent comment.
-     * Returns mapped comment objects in page order.
+     * Returns { replies, truncated, errorMessage }: replies are the mapped
+     * comment objects in page order (deduplicated by commentId across pages).
+     * `truncated` is true when collection stopped early for any reason other
+     * than reaching `cap` or the natural end of the thread (repeated/cycling
+     * continuation token, page cap, fetch error, or `shouldStop` firing) —
+     * in those cases the replies collected so far are still returned.
+     * `shouldStop` is an optional callback consulted before every page fetch
+     * (used by the caller to enforce the run's charge cap before spending
+     * more compute).
      */
-    async fetchReplies({ token, parentCommentId, cap, video }) {
-        const out = [];
+    async fetchReplies({ token, parentCommentId, cap, video, shouldStop }) {
+        const replies = [];
+        const seenReplyIds = new Set();
+        const seenTokens = new Set();
+        const maxPages = Math.ceil(cap / 10) + 5;
         let next = token;
-        while (next && out.length < cap) {
-            const page = await this.fetchPage(next);
+        let pages = 0;
+        let truncated = false;
+        let errorMessage = null;
+        while (next && replies.length < cap) {
+            // YouTube re-serves continuation tokens under rate limiting and
+            // sort churn; following a token we have already seen can loop
+            // forever, so treat any repeat (including a full cycle) as the
+            // end of what we can collect.
+            if (seenTokens.has(next)) {
+                truncated = true;
+                errorMessage = 'continuation token repeated; stopped to avoid an infinite loop';
+                break;
+            }
+            seenTokens.add(next);
+            if (pages >= maxPages) {
+                truncated = true;
+                errorMessage = `reply page cap (${maxPages}) reached`;
+                break;
+            }
+            if (shouldStop && shouldStop()) {
+                truncated = true;
+                errorMessage = 'stopped by caller (charge cap)';
+                break;
+            }
+            let page;
+            try {
+                page = await this.fetchPage(next);
+            } catch (err) {
+                // Keep the replies already collected for this parent instead
+                // of discarding the whole thread.
+                truncated = true;
+                errorMessage = err.message;
+                break;
+            }
+            pages++;
             for (const t of page.threads) {
-                if (out.length >= cap) break;
+                if (replies.length >= cap) break;
+                if (seenReplyIds.has(t.commentId)) continue;
                 const mapped = this.mapComment(page.payloads.get(t.commentId), t.legacy, {
                     ...video,
                     parentCommentId,
                 });
-                if (mapped) out.push(mapped);
+                if (mapped) {
+                    seenReplyIds.add(t.commentId);
+                    replies.push(mapped);
+                }
             }
             next = page.nextToken;
         }
-        return out;
+        return { replies, truncated, errorMessage };
     }
 }

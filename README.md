@@ -2,7 +2,7 @@
 
 Extract comments **and full reply threads** from any public YouTube video — at **$0.90 per 1,000 comments**, with exact limits and a hard cost cap on every run.
 
-No browser. No YouTube API key. No login. Plain HTTP against the same endpoints the YouTube website uses, so runs start instantly and a 1,000-comment job finishes in seconds, not minutes.
+No browser. No YouTube API key. No login. Plain HTTP against the same endpoints the YouTube website uses, so runs start instantly. Pagination is sequential — roughly one page of ~20 comments per request — so wall-clock time scales with page latency and reply volume rather than browser overhead.
 
 ## Why this Actor (honest comparison)
 
@@ -15,7 +15,7 @@ Numbers for the leading Store Actor (`streamers/youtube-comments-scraper`, 3,935
 | Replies | Included, same rate, linked to parent | Extra step / separate handling |
 | Limit enforcement | Hard cap — never returns or charges beyond your max | — |
 | Cost cap | Built-in `maxTotalChargeUsd` input | Console setting only |
-| Speed | ~10–20 comments/sec (HTTP pagination) | ~1.3 comments/sec (independent test: 75 comments in 57 s) |
+| Speed | Sequential HTTP pagination, ~20 comments per request, no browser overhead | ~1.3 comments/sec (independent test: 75 comments in 57 s) |
 | Pinned / hearted / creator flags | Included in every row | Partial |
 
 ## Input

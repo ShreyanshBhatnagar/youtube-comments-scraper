@@ -51,12 +51,13 @@ const A = runActor('runA', {
 const aTop = A.items.filter((i) => !i.error && !i.isReply);
 const aReplies = A.items.filter((i) => !i.error && i.isReply);
 check('A exit code 0', A.proc.status === 0);
+check('A dataset non-empty', A.items.length > 0, `got ${A.items.length}`);
 check('A exactly 30 top-level (hard cap respected)', aTop.length === 30, `got ${aTop.length}`);
 check('A replies present', aReplies.length >= 1, `got ${aReplies.length}`);
-check('A per-parent reply cap <= 3', aReplies.every((r) => aReplies.filter((x) => x.parentCommentId === r.parentCommentId).length <= 3));
-check('A every reply parent is in dataset', aReplies.every((r) => aTop.some((t) => t.commentId === r.parentCommentId)));
-check('A commentIds unique', new Set(A.items.filter((i) => i.commentId).map((i) => i.commentId)).size === A.items.filter((i) => i.commentId).length);
-check('A rows have text/author/likes/url', aTop.every((i) => typeof i.text === 'string' && i.authorName && typeof i.likeCount === 'number' && i.commentUrl?.includes(i.commentId)));
+check('A per-parent reply cap <= 3', aReplies.length > 0 && aReplies.every((r) => aReplies.filter((x) => x.parentCommentId === r.parentCommentId).length <= 3));
+check('A every reply parent is in dataset', aReplies.length > 0 && aReplies.every((r) => aTop.some((t) => t.commentId === r.parentCommentId)));
+check('A commentIds unique', A.items.some((i) => i.commentId) && new Set(A.items.filter((i) => i.commentId).map((i) => i.commentId)).size === A.items.filter((i) => i.commentId).length);
+check('A rows have text/author/likes/url', aTop.length > 0 && aTop.every((i) => typeof i.text === 'string' && i.authorName && typeof i.likeCount === 'number' && i.commentUrl?.includes(i.commentId)));
 check('A stats.output matches dataset', A.output && A.output.commentsEmitted === A.items.filter((i) => !i.error).length, JSON.stringify(A.output));
 console.log(`A detail: ${aTop.length} top-level + ${aReplies.length} replies = ${A.items.length} rows in ${A.secs}s (${(A.items.length / A.secs).toFixed(1)} rows/s)`);
 if (aTop[0]) console.log('A sample row:', JSON.stringify(aTop[0], null, 1).slice(0, 700));
@@ -71,8 +72,9 @@ const B = runActor('runB', {
 const bTop = B.items.filter((i) => !i.error);
 const bErrors = B.items.filter((i) => i.error);
 check('B exit code 0', B.proc.status === 0);
+check('B dataset non-empty', B.items.length > 0, `got ${B.items.length}`);
 check('B exactly 15 top-level', bTop.length === 15, `got ${bTop.length}`);
-check('B no replies when includeReplies=false', B.items.every((i) => !i.isReply));
+check('B no replies when includeReplies=false', bTop.length > 0 && B.items.every((i) => !i.isReply));
 check('B exactly 1 error row for invalid input', bErrors.length === 1, `got ${bErrors.length}`);
 const recent = bTop.filter((i) => /\b(minute|hour|day|week)s? ago/.test(i.publishedTimeText || ''));
 check('B newest sort returns recent comments (>=8 of 15 within a week)', recent.length >= 8, `got ${recent.length}; sample times: ${bTop.slice(0, 5).map((i) => i.publishedTimeText).join(' | ')}`);
